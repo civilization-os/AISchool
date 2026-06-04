@@ -26,7 +26,12 @@ def get_or_create_student(db: Session, name: str = "学习者") -> Student:
 # ─── LearningSession ─────────────────────────────────────
 
 def create_session(db: Session, student_id: int, subject: str) -> LearningSession:
-    session = LearningSession(student_id=student_id, subject=subject, status="assessing")
+    session = LearningSession(
+        student_id=student_id,
+        subject=subject,
+        status="assessing",
+        state_status="assessing",
+    )
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -99,10 +104,19 @@ def bulk_create_syllabus(db: Session, session_id: int, syllabus_data: dict):
                 item_id=item["id"],
                 item_title=item["title"],
                 item_description=item.get("description", ""),
+                level=item.get("level", 1),
                 sort_order=sort
             )
             db.add(db_item)
             sort += 1
+    db.commit()
+
+
+def delete_syllabus_items(db: Session, session_id: int):
+    """删除会话的所有大纲条目"""
+    db.query(SyllabusItem).filter(
+        SyllabusItem.session_id == session_id
+    ).delete(synchronize_session=False)
     db.commit()
 
 
@@ -260,6 +274,16 @@ def complete_quiz(db: Session, quiz_id: int, answers: list,
         record.score = score
         record.passed = passed
         record.ai_feedback = feedback
+        db.commit()
+        db.refresh(record)
+    return record
+
+
+def save_quiz_answers(db: Session, quiz_id: int, answers: list) -> Optional[QuizRecord]:
+    """暂存测验答案"""
+    record = db.query(QuizRecord).filter(QuizRecord.id == quiz_id).first()
+    if record:
+        record.answers = answers
         db.commit()
         db.refresh(record)
     return record

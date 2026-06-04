@@ -1,15 +1,20 @@
-crewai>=0.28.0
-crewai-tools>=0.1.0
-langchain>=0.1.0
+# LangChain 生态
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langchain-community>=0.3.0
+langgraph>=0.2.0
+
+# LLM 接入
 openai>=1.0.0
-python-dotenv>=1.0.0
-chromadb>=0.4.0
-langchain-community>=0.0.0
+
+# Web
 fastapi>=0.104.0
 uvicorn>=0.24.0
 pydantic>=2.0.0
+python-multipart>=0.0.9
+
+# 数据库
 sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.0
-redis>=5.0.0
-pandas>=2.0.0
-matplotlib>=3.7.0
+
+# 工具
+python-dotenv>=1.0.0

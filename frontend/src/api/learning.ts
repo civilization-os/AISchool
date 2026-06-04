@@ -74,8 +74,8 @@ export const saveAssessmentAnswers = (sessionId: number, answers: string[]) =>
 export const checkHealth = () => api.get('/health')
 
 // ── 会话管理 ──────────────────────────────────────────
-export const createSession = (subject: string, studentName = '学习者') =>
-    api.post('/session/create', { subject, student_name: studentName })
+export const createSession = (subject: string, studentName = '学习者', levels: number[] = [1]) =>
+    api.post('/session/create', { subject, student_name: studentName, levels })
 
 export const getSession = (sessionId: number) =>
     api.get(`/session/${sessionId}`)
@@ -97,8 +97,8 @@ export const submitAssessment = (sessionId: number, answers: string[]) =>
     api.post(`/assessment/submit/${sessionId}`, { answers })
 
 // ── 大纲（持久化）─────────────────────────────────────
-export const generateSyllabusForSession = (sessionId: number, topic: string) =>
-    api.post(`/syllabus/generate/${sessionId}`, { topic })
+export const generateSyllabusForSession = (sessionId: number, topic: string, force = false) =>
+    api.post(`/syllabus/generate/${sessionId}?force=${force}`, { topic })
 
 export const updateSyllabusItem = (itemDbId: number, status: string, masteryScore?: number) =>
     api.put(`/syllabus/item/${itemDbId}`, { status, mastery_score: masteryScore })
@@ -115,6 +115,9 @@ export const startQuiz = (sessionId: number, conversationId: number, itemDbId: n
 
 export const startQuizStream = (sessionId: number, conversationId: number, itemDbId: number, onChunk: (text: string) => void) =>
     fetchStream(`/classroom/start-quiz_stream/${sessionId}`, { conversation_id: conversationId, item_db_id: itemDbId }, onChunk)
+
+export const saveQuizAnswers = (sessionId: number, quizId: number, answers: string[]) =>
+    api.post(`/classroom/save_quiz_answers/${sessionId}`, { quiz_id: quizId, answers })
 
 export const submitQuiz = (sessionId: number, quizId: number, itemDbId: number,
     answers: string[], images: File[] = []) => {

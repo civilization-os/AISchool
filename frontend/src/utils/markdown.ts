@@ -28,34 +28,58 @@ md.use(mk)
  */
 function convertHierarchyToPremiumTree(text: string): string {
     const lines = text.split('\n').filter(l => l.trim())
-    if (!lines.some(l => l.includes('├──') || l.includes('└──'))) return text
+    if (!lines.some(l => /[├└│]/.test(l))) return text
 
     let html = '<div class="tree-container">'
 
-    // 识别标题/根节点
-    const rootLine = lines[0]
-    if (!rootLine.includes('├') && !rootLine.includes('└')) {
-        html += `<div class="tree-root"><span class="node-icon">🎯</span>${rootLine.trim()}</div>`
-        lines.shift()
+    // 识别标题/根节点：第一行如果不包含层级符号，则视为根
+    let startIdx = 0
+    const firstLine = lines[0]
+    if (!/[├└│]/.test(firstLine)) {
+        html += `<div class="tree-root"><span class="node-icon">🎯</span>${escapeHtml(firstLine.trim())}</div>`
+        startIdx = 1
     }
 
     html += '<div class="tree-content">'
-    lines.forEach(line => {
-        const depth = (line.match(/│/g) || []).length + (line.includes('├──') || line.includes('└──') ? 1 : 0)
-        const content = line.replace(/[│├└]──/g, '').replace(/│/g, '').trim()
+    
+    for (let i = startIdx; i < lines.length; i++) {
+        const line = lines[i]
+        // 计算深度：根据开头的空格和层级符号数量
+        const prefixMatch = line.match(/^[ \t│├└─]*/)
+        const prefix = prefixMatch ? prefixMatch[0] : ''
+        const depth = (prefix.match(/[│├└]/g) || []).length || 1
+        
+        const content = line.replace(/^[ \t│├└─]+/, '').trim()
         if (content) {
+            // 根据内容匹配图标
+            let icon = '🔗'
+            if (/环境|系统|平台|架构/.test(content)) icon = '💻'
+            else if (/核心|重点|考点|必考/.test(content)) icon = '🔥'
+            else if (/语法|基础|定义|变量/.test(content)) icon = '📝'
+            else if (/运算|算术|逻辑|处理/.test(content)) icon = '⚙️'
+            else if (/模块|项目|工程/.test(content)) icon = '📦'
+            
             html += `
-                <div class="tree-node" style="margin-left: ${(depth - 1) * 20}px">
+                <div class="tree-node" style="padding-left: ${(depth - 1) * 20}px">
                     <div class="node-content">
-                        <span class="node-icon">${content.includes('环境') || content.includes('系统') ? '💻' : '🔗'}</span>
-                        ${content}
+                        <span class="node-icon">${icon}</span>
+                        ${escapeHtml(content)}
                     </div>
                 </div>`
         }
-    })
+    }
 
     html += '</div></div>'
     return html
+}
+
+function escapeHtml(unsafe: string): string {
+    return unsafe
+         .replace(/&/g, "&amp;")
+         .replace(/</g, "&lt;")
+         .replace(/>/g, "&gt;")
+         .replace(/"/g, "&quot;")
+         .replace(/'/g, "&#039;");
 }
 
 export function renderMd(text: string | null | undefined): string {
@@ -65,8 +89,8 @@ export function renderMd(text: string | null | undefined): string {
         let p = text
 
         // 0. 特殊处理：层级板书转 Premium Tree
-        // 匹配包含层级符号的段落
-        const treePattern = /((?:^|\n).*[Python|语法|变量|运算|模块].*(?:\n(?:[│├└]──|│).*)+)/g
+        // 匹配包含层级符号的段落，支持 ├, └, │, ─ 等符号，不再硬性限制关键词
+        const treePattern = /((?:\n|^)(?:[^\n]*)(?:\n[ \t]*[│├└][─│ \t]+[^\n]*)+)/g
         p = p.replace(treePattern, (match) => {
             return convertHierarchyToPremiumTree(match)
         })

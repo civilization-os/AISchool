@@ -19,18 +19,18 @@ from core.outline_agent import (
 
 
 # ──────────────────────────────────────────────
-# 工具：单次 Agent 调用
+# 工具：单次 LLM 调用（替代旧的 CrewAI Agent 调用）
 # ──────────────────────────────────────────────
 def ask_agent(agent_role: str, agent_goal: str, backstory: str,
               task_description: str, expected_output: str = "详细的回答",
               verbose: bool = False) -> str:
-    from crewai import Agent, Task, Crew
-    llm = LLMConfig.get_llm()
-    agent = Agent(role=agent_role, goal=agent_goal, backstory=backstory,
-                  verbose=verbose, llm=llm)
-    task = Task(description=task_description, agent=agent, expected_output=expected_output)
-    crew = Crew(agents=[agent], tasks=[task], verbose=verbose, memory=False)
-    return str(crew.kickoff())
+    from core.llm import get_chat_model
+    from langchain_core.messages import SystemMessage, HumanMessage
+    system = f"你是一位{agent_role}，目标是{agent_goal}，{backstory}"
+    user = f"请{task_description}\n\n要求：{expected_output}"
+    llm = get_chat_model(temperature=0.7)
+    resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+    return resp.content
 
 
 # ──────────────────────────────────────────────

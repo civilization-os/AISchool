@@ -1,162 +1,148 @@
 """
-学习辅导Crew - 核心多Agent协作系统
+学习引擎 — LangGraph 状态机的薄封装
+API 层只需调用这些方法，无需理解图结构
 """
 
-from crewai import Crew, Process
-from typing import Dict, Any, List
-import os
-from dotenv import load_dotenv
+from typing import Optional
+from core.state import LearningState, SessionStatus, create_initial_state
+from core.graph import full_graph, syllabus_graph, lesson_graph, quiz_graph, exam_graph
 
-from config.agents import (
-    create_orchestrator_agent,
-    create_tutor_agent,
-    create_question_generator_agent,
-    create_evaluator_agent,
-    create_memory_manager_agent
-)
 
-from config.tasks import (
-    create_assess_student_task,
-    create_teach_topic_task,
-    create_generate_questions_task,
-    create_evaluate_learning_task,
-    create_update_memory_task
-)
+class LearningEngine:
+    """学习引擎 — 对 LangGraph 状态机的业务封装"""
 
-# 加载环境变量
-load_dotenv()
-
-class LearningCrew:
-    """学习辅导Crew"""
-    
-    def __init__(self, student_id: str = "default_student"):
+    def __init__(self, session_id: int = 0, student_id: str = "default"):
+        self.session_id = session_id
         self.student_id = student_id
-        self.agents = self._create_agents()
-        self.crew = None
-        
-    def _create_agents(self):
-        """创建所有Agent"""
-        return {
-            "orchestrator": create_orchestrator_agent(),
-            "tutor": create_tutor_agent(),
-            "question_generator": create_question_generator_agent(),
-            "evaluator": create_evaluator_agent(),
-            "memory_manager": create_memory_manager_agent()
-        }
-    
-    def create_learning_session(self, topic: str, student_info: Dict[str, Any] = None):
-        """创建完整的学习会话"""
-        if student_info is None:
-            student_info = {
-                "name": "新学生",
-                "level": "beginner",
-                "goals": [f"学习{topic}"]
-            }
-        
-        # 创建任务序列
-        tasks = [
-            # 1. 评估学生
-            create_assess_student_task(
-                self.agents["orchestrator"], 
-                student_info
-            ),
-            
-            # 2. 教学讲解
-            create_teach_topic_task(
-                self.agents["tutor"],
-                topic,
-                student_info.get("level", "beginner")
-            ),
-            
-            # 3. 生成练习题
-            create_generate_questions_task(
-                self.agents["question_generator"],
-                topic,
-                student_info.get("level", "beginner"),
-                count=3
-            ),
-            
-            # 4. 模拟评估（这里用示例答案）
-            create_evaluate_learning_task(
-                self.agents["evaluator"],
-                {"topic": topic, "answers": ["示例答案1", "示例答案2"]}
-            ),
-            
-            # 5. 更新学习记录
-            create_update_memory_task(
-                self.agents["memory_manager"],
-                self.student_id,
-                {
-                    "topic": topic,
-                    "completed": True,
-                    "score": 85,
-                    "feedback": "学习完成"
-                }
-            )
-        ]
-        
-        # 创建Crew
-        self.crew = Crew(
-            agents=list(self.agents.values()),
-            tasks=tasks,
-            process=Process.sequential,  # 顺序执行
-            verbose=True,
-            memory=False  # 关闭内置记忆（需要OpenAI Embedding，与DeepSeek不兼容）
-        )
-        
-        return self
-    
-    def run(self):
-        """运行学习会话"""
-        if not self.crew:
-            raise ValueError("请先调用 create_learning_session 创建会话")
-        
-        print(f"🚀 开始学习会话 - 学生: {self.student_id}")
-        print("=" * 50)
-        
-        result = self.crew.kickoff()
-        
-        print("=" * 50)
-        print("✅ 学习会话完成")
-        
-        return result
-    
-    def quick_teach(self, topic: str, question: str = None):
-        """快速教学模式"""
-        print(f"📚 快速教学: {topic}")
-        
-        # 只使用教学Agent
-        from crewai import Crew
-        quick_crew = Crew(
-            agents=[self.agents["tutor"]],
-            tasks=[
-                create_teach_topic_task(
-                    self.agents["tutor"],
-                    topic,
-                    "general"
-                )
-            ],
-            verbose=True
-        )
-        
-        return quick_crew.kickoff()
-    
-    def generate_practice(self, topic: str, difficulty: str = "medium", count: int = 5):
-        """生成练习题"""
-        print(f"📝 生成练习题: {topic} ({difficulty}难度)")
-        
-        from crewai import Crew
-        practice_crew = Crew(
-            agents=[self.agents["question_generator"]],
-            tasks=[
-                create_generate_questions_task(
-                    self.agents["question_generator"],
-                    topic,
-                    difficulty,
-                    count
-                )
-            ],
-            verbose=True
-        )
-        
-        return practice_crew.kickoff()
+
+    def _thread_id(self, suffix: str = "") -> dict:
+        tid = f"session_{self.session_id}{suffix}"
+        return {"configurable": {"thread_id": tid}}
+
+    def _run_graph(self, graph, state: dict, suffix: str = "") -> dict:
+        """运行图并返回结果 state"""
+        return graph.invoke(state, config=self._thread_id(suffix))
+
+    # ── 完整流程 ──────────────────────────────────────
+
+    def run_full_session(self, topic: str) -> dict:
+        """完整学习流程（测评→大纲→教学→测验→完成）"""
+        state = create_initial_state(self.session_id, self.student_id, topic)
+        return self._run_graph(full_graph, state)
+
+    # ── 分步操作 ──────────────────────────────────────
+
+    def start_assessment(self, topic: str) -> dict:
+        """生成测评题目"""
+        from core.nodes import start_assessment as fn
+        return fn({"subject": topic, "session_id": self.session_id})
+
+    def submit_assessment(self, questions: list, answers: list, subject: str) -> dict:
+        """提交测评答案"""
+        from core.nodes import submit_assessment as fn
+        return fn({
+            "assessment_questions": questions,
+            "assessment_answers": answers,
+            "subject": subject,
+        })
+
+    def generate_syllabus(self, topic: str, levels: list = None) -> dict:
+        """生成大纲 — 返回 syllabus dict ({topic, description, sections})
+           levels: [1] 单学期, [1,2,3] 多学期"""
+        from core.nodes import generate_syllabus as fn
+        result = fn({"subject": topic, "levels": levels or [1]})
+        return result.get("syllabus", {})
+
+    def start_lesson(self, subject: str, item_title: str, attempt: int = 1) -> str:
+        """开始上课"""
+        from core.nodes import start_lesson as fn
+        result = fn({
+            "subject": subject,
+            "current_item_title": item_title,
+            "attempt": attempt,
+        })
+        return result.get("lesson_content", "")
+
+    def ask_question(self, subject: str, item_title: str, lesson_content: str,
+                     chat_history: list, question: str) -> str:
+        """学生追问"""
+        from core.nodes import ask_question as fn
+        result = fn({
+            "subject": subject,
+            "current_item_title": item_title,
+            "lesson_content": lesson_content,
+            "chat_history": chat_history or [],
+            "student_question": question,
+        })
+        return result.get("answer", "")
+
+    def start_quiz(self, subject: str, item_title: str) -> list:
+        """生成随堂测验题目"""
+        from core.nodes import start_quiz as fn
+        result = fn({"subject": subject, "current_item_title": item_title})
+        return result.get("quiz_questions", [])
+
+    def submit_quiz(self, subject: str, item_title: str,
+                    questions: list, answers: list) -> dict:
+        """提交测验"""
+        from core.nodes import submit_quiz as fn
+        return fn({
+            "subject": subject,
+            "current_item_title": item_title,
+            "quiz_questions": questions,
+            "quiz_answers": answers,
+        })
+
+    def start_exam(self, subject: str, exam_type: str,
+                   syllabus_items: list) -> tuple:
+        """生成考试题目"""
+        from core.nodes import start_exam as fn
+        result = fn({
+            "subject": subject,
+            "exam_type": exam_type,
+            "syllabus_items": syllabus_items,
+        })
+        return result.get("exam_type", exam_type), result.get("exam_questions", [])
+
+    def submit_exam(self, subject: str, exam_type: str,
+                    questions: list, answers: list) -> dict:
+        """提交考试"""
+        from core.nodes import submit_exam as fn
+        return fn({
+            "subject": subject,
+            "exam_type": exam_type,
+            "exam_questions": questions,
+            "exam_answers": answers,
+        })
+
+    # ── 快速模式（独立工具页面）────────────────────────
+
+    def quick_teach(self, topic: str, question: Optional[str] = None) -> str:
+        """快速教学 — 不经过状态机，直接调用 LLM"""
+        from core.nodes import start_lesson as teach_fn
+        from core.nodes import ask_question as ask_fn
+
+        if question:
+            lesson = teach_fn({"subject": topic, "current_item_title": topic, "attempt": 1})
+            ans = ask_fn({
+                "subject": topic, "current_item_title": topic,
+                "lesson_content": lesson.get("lesson_content", ""),
+                "chat_history": [], "student_question": question,
+            })
+            return ans.get("answer", "")
+        else:
+            result = teach_fn({"subject": topic, "current_item_title": topic, "attempt": 1})
+            return result.get("lesson_content", "")
+
+    def generate_practice(self, topic: str, difficulty: str = "medium", count: int = 5) -> str:
+        """生成练习题 — 直连 LLM"""
+        from core.llm import get_chat_model
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        diff_map = {"easy": "基础巩固", "medium": "能力提升", "hard": "培优拓展"}
+        llm = get_chat_model(temperature=1.0)
+        resp = llm.invoke([
+            SystemMessage(content="你是一位中国名校出题专家。使用 Markdown。"),
+            HumanMessage(content=f"为「{topic}」生成{count}道{diff_map.get(difficulty,'能力提升')}难度的练习题，含参考答案和解析。"),
+        ])
+        return resp.content

@@ -5,8 +5,9 @@ FastAPI Web API — AI School 完整教学流程
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List, Any
+from typing import Optional, List, Any, AsyncGenerator
 import uvicorn, os, base64, traceback
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 import json
@@ -15,14 +16,32 @@ from db.database import get_db, create_tables
 from db import crud
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from core.direct_llm import direct_teach, direct_practice, generate_syllabus
-from core.assessment_llm import generate_assessment_questions, evaluate_assessment, generate_assessment_questions_stream
-from core.classroom_llm import start_lesson, ask_question, generate_mini_quiz, evaluate_quiz, generate_mini_quiz_stream
-from core.exam_llm import generate_exam, evaluate_exam, generate_exam_stream
+from core.direct_llm import direct_teach, direct_practice
+from core.assessment_llm import generate_assessment_questions_stream
+from core.classroom_llm import generate_mini_quiz_stream
+from core.exam_llm import generate_exam_stream
+from core.learning_crew import LearningEngine
+from core.state import SessionStatus
 
 load_dotenv()
 
-app = FastAPI(title="AI School API", description="完整 AI 课堂系统", version="2.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时自动建表"""
+    try:
+        create_tables()
+        print("[OK] 数据库表已创建/确认")
+    except Exception as e:
+        print(f"[WARN] 数据库初始化警告: {e}")
+    yield
+
+app = FastAPI(
+    title="AI School API", 
+    description="完整 AI 课堂系统", 
+    version="2.0.0",
+    lifespan=lifespan
+)
 
 # CORS — 允许所有访问（支持小程序迁移与外部部署）
 app.add_middleware(
@@ -42,16 +61,6 @@ async def api_prefix_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-@app.on_event("startup")
-def startup():
-    """启动时自动建表"""
-    try:
-        create_tables()
-        print("✅ 数据库表已创建/确认")
-    except Exception as e:
-        print(f"⚠️ 数据库初始化警告: {e}")
-
-
 # ─── 健康检查 ─────────────────────────────────────────────
 
 @app.get("/health")
@@ -66,17 +75,49 @@ def health():
 class CreateSessionRequest(BaseModel):
     subject: str
     student_name: str = "学习者"
+    levels: List[int] = [1]       # 课程等级 [1] 或 [1,2] 或 [1,2,3]
+
+
+class NormalizeCourseRequest(BaseModel):
+    query: str                     # 用户输入，如 "微积分" "python"
+
+
+@app.post("/course/normalize")
+def normalize_course(req: NormalizeCourseRequest):
+    """规整课程名称，建议等级"""
+    from core.llm import get_chat_model
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    llm = get_chat_model(temperature=0.3)
+    system = "你是课程规划专家。返回 JSON。"
+    user = f"""用户输入了课程「{req.query}」。请：
+1. 规整为标准的课程名称
+2. 建议合理的学期等级数（1-4）
+
+JSON: {{"name":"标准课程名","levels":[1,2,3],"description":"简短说明"}}"""
+
+    resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+    from core.nodes import _parse_json
+    result = _parse_json(resp.content, {"name": req.query, "levels": [1], "description": ""})
+    # 确保 levels 合法
+    if not isinstance(result.get("levels"), list) or not result["levels"]:
+        result["levels"] = [1]
+    return result
 
 
 @app.post("/session/create")
 def create_session_api(req: CreateSessionRequest, db: Session = Depends(get_db)):
     student = crud.get_or_create_student(db, req.student_name)
     session = crud.create_session(db, student.id, req.subject)
+    # 保存课程等级
+    session.course_levels = req.levels
+    db.commit()
     return {
         "session_id": session.id,
         "student_id": student.id,
         "subject": session.subject,
         "status": session.status,
+        "levels": req.levels,
     }
 
 
@@ -110,15 +151,17 @@ def get_session_api(session_id: int, db: Session = Depends(get_db)):
     return {
         "session_id": session.id,
         "subject": session.subject,
-        "status": session.status,
+        "status": session.state_status or session.status,
         "progress_pct": session.progress_pct,
         "proficiency_data": session.proficiency_data,
+        "course_levels": session.course_levels or [1],
+        "completed_item_ids": session.completed_item_ids or [],
         "assessment": assessment_info,
         "syllabus_items": [
             {"id": i.id, "section_id": i.section_id, "section_title": i.section_title,
-             "item_id": i.item_id, "item_title": i.item_title,
-             "item_description": i.item_description, "status": i.status,
-             "mastery_score": i.mastery_score}
+             "item_id": i.item_id, "item_title": i.item_title, "item_description": i.item_description,
+             "status": i.status, "mastery_score": i.mastery_score, "sort_order": i.sort_order,
+             "level": i.level}
             for i in items
         ],
         "exam_unlock": unlock,
@@ -203,13 +246,19 @@ def start_assessment(session_id: int, open_count: int = 3, force_new: bool = Fal
             "cached": True
         }
 
-    questions = generate_assessment_questions(session.subject, count=10, open_count=open_count)
+    # 使用 LearningEngine 生成题目
+    engine = LearningEngine(session_id, f"student_{session.student_id}")
+    result = engine.start_assessment(session.subject)
+    questions = result.get("assessment_questions", [])
     if not questions:
         raise HTTPException(500, "生成题目失败，请重试")
-    
-    # 存入全局缓存
+
+    # 更新状态
+    session.state_status = SessionStatus.ASSESSING
+    db.commit()
+
+    # 存入全局缓存和 DB
     crud.set_assessment_cache(db, session.subject, questions)
-    
     record = crud.create_assessment(db, session_id, questions)
     return {
         "assessment_id": record.id,
@@ -217,6 +266,7 @@ def start_assessment(session_id: int, open_count: int = 3, force_new: bool = Fal
         "subject": session.subject,
         "questions": questions,
         "total": len(questions),
+        "state_status": session.state_status,
     }
 
 @app.post("/assessment/start_stream/{session_id}")
@@ -310,15 +360,72 @@ def submit_assessment(session_id: int, req: SubmitAssessmentRequest, db: Session
     if not record:
         raise HTTPException(404, "测评记录不存在，请先调用 /assessment/start")
 
-    proficiency, report, overall_score, question_results = evaluate_assessment(session.subject, record.questions, req.answers)
+    # 使用 LearningEngine 批改
+    engine = LearningEngine(session_id, f"student_{session.student_id}")
+    result = engine.submit_assessment(record.questions, req.answers, session.subject)
+    assessment_result = result.get("assessment_result", {})
+
+    proficiency = assessment_result.get("proficiency", {})
+    report = assessment_result.get("report", "")
+    overall_score = assessment_result.get("overall_score", 0.0)
+    question_results = assessment_result.get("question_results", [])
+
     record = crud.complete_assessment(db, session_id, req.answers, proficiency, report, overall_score, question_results)
+
+    # 更新状态机状态
+    session = crud.get_session(db, session_id)
+    if session:
+        session.state_status = SessionStatus.ASSESSED
+        db.commit()
 
     return {
         "session_id": session_id,
         "proficiency": proficiency,
         "report": report,
         "overall_score": overall_score,
-        "question_results": question_results
+        "question_results": question_results,
+        "state_status": SessionStatus.ASSESSED,
+    }
+
+
+# ════════════════════════════════════════════════════════
+# 跳过入学测评
+# ════════════════════════════════════════════════════════
+
+@app.post("/assessment/skip/{session_id}")
+def skip_assessment(session_id: int, db: Session = Depends(get_db)):
+    """跳过入学测评，直接进入 ASSESSED 状态"""
+    session = crud.get_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "会话不存在")
+
+    # 检查是否已有测评
+    from db.models import AssessmentRecord
+    record = db.query(AssessmentRecord).filter(
+        AssessmentRecord.session_id == session_id
+    ).first()
+
+    if not record:
+        # 创建一条空的测评记录
+        record = AssessmentRecord(
+            session_id=session_id,
+            questions=[],
+            answers=[],
+            completed=True,
+            proficiency_result={"__overall__": 0},
+            ai_report="",
+            question_results=[],
+        )
+        db.add(record)
+
+    session.state_status = SessionStatus.ASSESSED
+    session.status = "assessed"
+    db.commit()
+
+    return {
+        "session_id": session_id,
+        "state_status": SessionStatus.ASSESSED,
+        "message": "已跳过入学测评",
     }
 
 
@@ -332,26 +439,81 @@ class GenerateSyllabusRequest(BaseModel):
 
 @app.post("/syllabus/generate/{session_id}")
 def generate_syllabus_for_session(session_id: int, req: GenerateSyllabusRequest,
-                                   db: Session = Depends(get_db)):
+                                   db: Session = Depends(get_db),
+                                   force: bool = False):
     session = crud.get_session(db, session_id)
     if not session:
         raise HTTPException(404, "会话不存在")
-    data = generate_syllabus(req.topic or session.subject)
-    if not data:
+
+    # force=True: 清空现有大纲和进度
+    if force:
+        crud.delete_syllabus_items(db, session_id)
+        session.progress_pct = 0.0
+        session.proficiency_data = {}
+
+    # 获取课程等级
+    levels = session.course_levels or [1]
+
+    # 使用 LearningEngine 生成大纲（支持多等级）
+    engine = LearningEngine(session_id, f"student_{session.student_id}")
+    syllabus = engine.generate_syllabus(req.topic or session.subject, levels=levels)
+    if not syllabus or not syllabus.get("sections"):
         raise HTTPException(500, "大纲生成失败")
-    crud.bulk_create_syllabus(db, session_id, data)
-    crud.update_session_status(db, session_id, "learning")
+
+    # 持久化到 DB
+    crud.bulk_create_syllabus(db, session_id, syllabus)
     items = crud.get_syllabus_items(db, session_id)
+
+    # 更新状态
+    session.state_status = SessionStatus.SYLLABUS_READY
+    session.status = "learning"
+    db.commit()
+
     return {
         "session_id": session_id,
-        "syllabus": data,
+        "syllabus": syllabus,
         "items_created": len(items),
+        "state_status": SessionStatus.SYLLABUS_READY,
+        "course_levels": levels,
+        "regenerated": force,
     }
 
 
 class UpdateItemStatusRequest(BaseModel):
     status: str             # none/learning/done
     mastery_score: Optional[float] = None
+
+
+@app.post("/syllabus/item/{item_db_id}/complete")
+def complete_syllabus_item(item_db_id: int, db: Session = Depends(get_db)):
+    """标记知识点完成，更新进度"""
+    item = db.query(crud.SyllabusItem).filter(crud.SyllabusItem.id == item_db_id).first()
+    if not item:
+        raise HTTPException(404, "知识点不存在")
+
+    # 更新状态
+    item.status = "done"
+    item.mastery_score = item.mastery_score or 85.0
+
+    # 更新 session 进度
+    session = db.query(crud.LearningSession).filter(crud.LearningSession.id == item.session_id).first()
+    if session:
+        completed = list(session.completed_item_ids or [])
+        if item.item_id not in completed:
+            completed.append(item.item_id)
+        session.completed_item_ids = completed
+
+        total = db.query(crud.SyllabusItem).filter(crud.SyllabusItem.session_id == session.id).count()
+        session.progress_pct = round(len(completed) / total * 100, 1) if total else 0
+        session.state_status = SessionStatus.ITEM_DONE
+
+    db.commit()
+
+    return {
+        "item_id": item_db_id,
+        "status": "done",
+        "progress_pct": session.progress_pct if session else 0,
+    }
 
 
 @app.put("/syllabus/item/{item_db_id}")
@@ -425,8 +587,16 @@ def classroom_start(session_id: int, req: StartLessonRequest, db: Session = Depe
             "resumed": True,
         }
 
-    # 全新上课
-    lesson_content = start_lesson(session.subject, item.item_title, attempt)
+    # 生成结构化教案
+    from core.nodes import start_lesson as start_lesson_node
+    plan_result = start_lesson_node({
+        "subject": session.subject,
+        "current_item_title": item.item_title,
+        "attempt": attempt,
+    })
+    lesson_content = plan_result.get("lesson_content", "")
+    lesson_plan = plan_result.get("lesson_plan", {})
+
     if convo is None:
         convo = crud.get_or_create_conversation(
             db, session_id, item.item_id, item.item_title, lesson_content)
@@ -435,17 +605,25 @@ def classroom_start(session_id: int, req: StartLessonRequest, db: Session = Depe
         convo.messages = []
         db.commit()
 
-    # 标记知识点为"学习中"
+    # 标记知识点为"学习中"，更新状态机状态
     crud.update_item_status(db, session_id, req.item_db_id, "learning")
+    session.state_status = SessionStatus.LEARNING
+    db.commit()
+
+    crud.update_item_status(db, session_id, req.item_db_id, "learning")
+    session.state_status = SessionStatus.LEARNING
+    db.commit()
 
     return {
         "conversation_id": convo.id,
         "item_id": item.item_id,
         "item_title": item.item_title,
         "lesson_content": lesson_content,
+        "lesson_plan": lesson_plan,
         "history": [],
         "attempt": attempt,
         "resumed": False,
+        "state_status": SessionStatus.LEARNING,
     }
 
 
@@ -464,7 +642,9 @@ def classroom_ask(session_id: int, req: AskQuestionRequest, db: Session = Depend
         raise HTTPException(404, "课堂对话不存在")
     session = crud.get_session(db, session_id)
 
-    answer = ask_question(
+    # 使用 LearningEngine 回答问题
+    engine = LearningEngine(session_id, f"student_{session.student_id}")
+    answer = engine.ask_question(
         session.subject, convo.item_title,
         convo.lesson_content,
         convo.messages or [],
@@ -493,9 +673,16 @@ def classroom_start_quiz(session_id: int, req: StartQuizRequest, db: Session = D
         raise HTTPException(404, "知识点不存在")
 
     attempt_number = crud.get_item_quiz_count(db, session_id, item.item_id) + 1
-    questions = generate_mini_quiz(session.subject, item.item_title, count=4)
+
+    # 使用 LearningEngine 生成测验
+    engine = LearningEngine(session_id, f"student_{session.student_id}")
+    questions = engine.start_quiz(session.subject, item.item_title)
     if not questions:
         raise HTTPException(500, "生成题目失败，请重试")
+
+    # 更新状态
+    session.state_status = SessionStatus.QUIZ_ACTIVE
+    db.commit()
 
     record = crud.create_quiz(db, session_id, item.item_id, item.item_title,
                               questions, attempt_number)
@@ -505,6 +692,7 @@ def classroom_start_quiz(session_id: int, req: StartQuizRequest, db: Session = D
         "item_title": item.item_title,
         "questions": questions,
         "attempt_number": attempt_number,
+        "state_status": SessionStatus.QUIZ_ACTIVE,
     }
 
 @app.post("/classroom/start-quiz_stream/{session_id}")
@@ -577,15 +765,21 @@ async def classroom_submit_quiz(
         content = await img.read()
         images_b64.append(base64.b64encode(content).decode())
 
-    score, passed, feedback = evaluate_quiz(
-        session.subject, quiz.item_title,
-        quiz.questions, answers_list, images_b64
-    )
+    # 使用 LearningEngine 批改
+    engine = LearningEngine(session_id, f"student_{session.student_id}")
+    result = engine.submit_quiz(session.subject, quiz.item_title, quiz.questions, answers_list)
+    score = result.get("quiz_result", {}).get("score", 0)
+    passed = result.get("quiz_result", {}).get("passed", False)
+    feedback = result.get("quiz_result", {}).get("feedback", "")
 
     crud.complete_quiz(db, quiz_id, answers_list, score, passed, feedback)
 
     if passed:
         crud.update_item_status(db, session_id, item_db_id, "done", score)
+        session.state_status = SessionStatus.QUIZ_REVIEW
+    else:
+        session.state_status = SessionStatus.QUIZ_REVIEW
+    db.commit()
 
     return {
         "quiz_id": quiz_id,
@@ -593,6 +787,7 @@ async def classroom_submit_quiz(
         "passed": passed,
         "feedback": feedback,
         "progress_pct": crud.get_exam_unlock_status(db, session_id)["progress"],
+        "state_status": session.state_status,
     }
 
 
@@ -807,6 +1002,11 @@ class ConfigSaveRequest(BaseModel):
     description: Optional[str] = None
 
 
+class AnswersSaveRequest(BaseModel):
+    quiz_id: int
+    answers: List[str]
+
+
 class ConfigTestRequest(BaseModel):
     llm_base_url: str
     llm_api_key: str
@@ -832,11 +1032,11 @@ def test_llm_config(req: ConfigTestRequest):
     """测试 LLM 配置是否可用 (真实调用)"""
     from openai import OpenAI
     try:
+        # 使用传入的参数进行实时测试，验证无误后再保存
         client = OpenAI(
             api_key=req.llm_api_key,
             base_url=req.llm_base_url
         )
-        # 发起一个极其简单的对话请求
         response = client.chat.completions.create(
             model=req.llm_model_name,
             messages=[{"role": "user", "content": "ping"}],
@@ -846,13 +1046,18 @@ def test_llm_config(req: ConfigTestRequest):
         return {"status": "ok", "message": f"连接成功！模型响应: {content}"}
     except Exception as e:
         error_msg = str(e)
-        # 简化一些常见的错误信息
         if "api_key" in error_msg.lower():
             error_msg = "API Key 错误或无效"
         elif "base_url" in error_msg.lower():
             error_msg = "Base URL 格式错误或无法访问"
-        
         raise HTTPException(status_code=400, detail=f"连接失败: {error_msg}")
+
+
+@app.post("/classroom/save_quiz_answers/{session_id}")
+def save_quiz_answers(session_id: int, req: AnswersSaveRequest, db: Session = Depends(get_db)):
+    """暂存小测验答案"""
+    crud.save_quiz_answers(db, req.quiz_id, req.answers)
+    return {"status": "ok"}
 
 
 @app.post("/learning/syllabus")

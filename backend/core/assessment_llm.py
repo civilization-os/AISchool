@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.config_utils import get_openai_client
+from core.llm_utils import chat_completion, parse_json_response
 
 def _chat(system: str, user: str, temperature: float = 1.0) -> str:
     client, model = get_openai_client()
@@ -55,16 +56,8 @@ def generate_assessment_questions(subject: str, count: int = 10, open_count: int
     "difficulty": "medium"
   }}
 ]"""
-    raw = _chat(system, user, temperature=1.0)
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = "\n".join(raw.split("\n")[1:])
-    if raw.endswith("```"):
-        raw = "\n".join(raw.split("\n")[:-1])
-    try:
-        return json.loads(raw.strip())
-    except:
-        return []
+    raw = chat_completion(system, user, temperature=1.0)
+    return parse_json_response(raw, fallback=[])
 
 def generate_assessment_questions_stream(subject: str, count: int = 10, open_count: int = 2):
     """流式生成入学诊断题，实时 yield 状态和数据"""
@@ -152,19 +145,11 @@ def evaluate_assessment(subject: str, questions: list, answers: list) -> tuple[d
     }}
   ]
 }}"""
-    raw = _chat(system, user, temperature=0.0)
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = "\n".join(raw.split("\n")[1:])
-    if raw.endswith("```"):
-        raw = "\n".join(raw.split("\n")[:-1])
-    try:
-        data = json.loads(raw.strip())
-        return (
-            data.get("proficiency", {}), 
-            data.get("report", ""), 
-            float(data.get("overall_score", 0.0)),
-            data.get("question_results", [])
-        )
-    except:
-        return {}, "评估完成（解析生成失败）", 0.0, []
+    raw = chat_completion(system, user, temperature=0.0)
+    data = parse_json_response(raw, fallback={})
+    return (
+        data.get("proficiency", {}), 
+        data.get("report", "评估完成（解析生成失败）"), 
+        float(data.get("overall_score", 0.0)),
+        data.get("question_results", [])
+    )

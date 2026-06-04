@@ -9,19 +9,9 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 from core.config_utils import get_openai_client
+from core.llm_utils import chat_completion, parse_json_response
 
-def _chat(system: str, user: str, temperature: float = 1.3, max_tokens: int = 3000) -> str:
-    client, model = get_openai_client()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": user},
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content or ""
+
 
 
 def direct_teach(topic: str, question: str | None = None) -> str:
@@ -35,7 +25,7 @@ def direct_teach(topic: str, question: str | None = None) -> str:
         user = f"请讲解「{topic}」，并特别解答这个问题：{question}"
     else:
         user = f"请详细讲解「{topic}」，让初学者能够快速理解和掌握。"
-    return _chat(system, user, temperature=1.3)
+    return chat_completion(system, user, temperature=1.3)
 
 
 def direct_practice(topic: str, difficulty: str = "medium", count: int = 5) -> str:
@@ -48,7 +38,7 @@ def direct_practice(topic: str, difficulty: str = "medium", count: int = 5) -> s
         "使用 Markdown 格式，标注题号。"
     )
     user = f"请为「{topic}」生成 {count} 道{diff_cn}难度的练习题，紧扣核心考点。"
-    return _chat(system, user, temperature=1.0)
+    return chat_completion(system, user, temperature=1.0)
 
 
 def generate_syllabus(topic: str) -> dict:
@@ -77,29 +67,21 @@ def generate_syllabus(topic: str) -> dict:
     }}
   ]
 }}"""
-    raw = _chat(system, user, temperature=1.0)
-    # 提取 JSON
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    try:
-        return json.loads(raw.strip())
-    except json.JSONDecodeError:
-        # fallback：返回基础结构
-        return {
-            "topic": topic,
-            "description": f"{topic} 学习大纲",
-            "sections": [
-                {
-                    "id": "1",
-                    "title": "基础入门",
-                    "description": "掌握基本概念",
-                    "items": [
-                        {"id": "1.1", "title": f"{topic} 基础概念", "description": "了解核心定义"},
-                        {"id": "1.2", "title": "环境搭建", "description": "配置学习环境"},
-                    ]
-                }
-            ]
-        }
+    raw = chat_completion(system, user, temperature=1.0)
+    
+    fallback = {
+        "topic": topic,
+        "description": f"{topic} 学习大纲",
+        "sections": [
+            {
+                "id": "1",
+                "title": "基础入门",
+                "description": "掌握基本概念",
+                "items": [
+                    {"id": "1.1", "title": f"{topic} 基础概念", "description": "了解核心定义"},
+                    {"id": "1.2", "title": "环境搭建", "description": "配置学习环境"},
+                ]
+            }
+        ]
+    }
+    return parse_json_response(raw, fallback=fallback)

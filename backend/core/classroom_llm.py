@@ -10,6 +10,7 @@ load_dotenv()
 
 
 from core.config_utils import get_openai_client
+from core.llm_utils import chat_completion, parse_json_response
 
 
 def _chat_messages(messages: list, temperature: float = 1.3) -> str:
@@ -106,24 +107,8 @@ def generate_mini_quiz(subject: str, item_title: str, count: int = 4) -> list:
     "explanation": "踩分点及考点说明"
   }}
 ]"""
-    client, model = get_openai_client()
-    raw = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user",   "content": user}],
-        temperature=1.0,
-        max_tokens=2000,
-    ).choices[0].message.content or ""
-
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = "\n".join(raw.split("\n")[1:])
-    if raw.endswith("```"):
-        raw = "\n".join(raw.split("\n")[:-1])
-    try:
-        return json.loads(raw.strip())
-    except:
-        return []
+    raw = chat_completion(system, user, temperature=1.0, max_tokens=2000)
+    return parse_json_response(raw, fallback=[])
 
 def generate_mini_quiz_stream(subject: str, item_title: str, count: int = 4):
     """流式生成小测验题目，实时 yield 状态和数据"""
@@ -200,6 +185,7 @@ def evaluate_quiz(subject: str, item_title: str, questions: list,
         "text": f"请批改「{subject} - {item_title}」的小测验：\n{qa_text}\n\n请返回JSON：{{\"score\": 85, \"passed\": true, \"feedback\": \"具体的典型错误分析与复习建议...\", \"weak_points\": [\"...\"]}}",
     })
 
+    raw = ""
     try:
         client, model = get_openai_client()
         r = client.chat.completions.create(
@@ -212,25 +198,18 @@ def evaluate_quiz(subject: str, item_title: str, questions: list,
         )
         raw = r.choices[0].message.content or ""
     except Exception as e:
-        # Vision 不支持时回退到纯文字
-        raw = _chat_messages([
-            {"role": "system", "content": "你是严格公正的中国阅卷老师，注意按踩分点给分，请返回 JSON 不要有多余文字。"},
-            {"role": "user", "content": f"批改「{subject} - {item_title}」小测验：\n{qa_text}\n返回JSON：{{\"score\": 85, \"passed\": true, \"feedback\": \"具体的典型错误分析与复习建议...\", \"weak_points\": []}}"}
-        ], temperature=0.0)
+        print(f"Vision 批改失败，尝试回退: {e}")
+        raw = chat_completion(
+            system_prompt="你是严格公正的中国阅卷老师，注意按踩分点给分，请返回 JSON 不要有多余文字。",
+            user_prompt=f"批改「{subject} - {item_title}」小测验：\n{qa_text}\n返回JSON：{{\"score\": 85, \"passed\": true, \"feedback\": \"...\"}}",
+            temperature=0.0
+        )
 
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = "\n".join(raw.split("\n")[1:])
-    if raw.endswith("```"):
-        raw = "\n".join(raw.split("\n")[:-1])
-    try:
-        data = json.loads(raw.strip())
-        score = float(data.get("score", 0))
-        passed = bool(data.get("passed", score >= 70))
-        feedback = data.get("feedback", "")
-        weak = data.get("weak_points", [])
-        if weak:
-            feedback += "\n\n**薄弱点：**\n" + "\n".join(f"- {w}" for w in weak)
-        return score, passed, feedback
-    except:
-        return 0.0, False, "批改出现问题，请重试"
+    data = parse_json_response(raw, fallback={})
+    score = float(data.get("score", 0))
+    passed = bool(data.get("passed", score >= 70))
+    feedback = data.get("feedback", "批改出现问题，请重试")
+    weak = data.get("weak_points", [])
+    if weak:
+        feedback += "\n\n**薄弱点：**\n" + "\n".join(f"- {w}" for w in weak)
+    return score, passed, feedback

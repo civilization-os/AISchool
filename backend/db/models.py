@@ -28,7 +28,10 @@ class LearningSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
     subject = Column(String(200), nullable=False)           # 学习主题
-    status = Column(String(20), default="assessing")        # assessing/learning/finished
+    status = Column(String(20), default="idle")             # 兼容旧字段
+    state_status = Column(String(20), default="idle")       # SessionStatus 枚举值
+    course_levels = Column(JSON, default=list)               # 课程等级 [1,2,3]
+    completed_item_ids = Column(JSON, default=list)          # 已完成知识点 item_id 列表
     proficiency_data = Column(JSON, default=dict)           # 各子领域熟练度 {domain: score}
     progress_pct = Column(Float, default=0.0)               # 总进度百分比
     created_at = Column(DateTime, server_default=func.now())
@@ -51,6 +54,7 @@ class SyllabusItem(Base):
     section_id = Column(String(10))                         # "1", "2", etc.
     section_title = Column(String(200))                     # 章节名称
     item_id = Column(String(20))                            # "1.1", "1.2", etc.
+    level = Column(Integer, default=1)                      # 所属学期等级 1/2/3/4
     item_title = Column(String(200), nullable=False)        # 知识点名称
     item_description = Column(Text)
     status = Column(String(20), default="none")             # none/learning/done
