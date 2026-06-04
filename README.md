@@ -1,80 +1,131 @@
-# AI School - 智能学习辅导系统 (Multi-Agent)
+# AI School — 智能学习辅导系统
 
-基于 CrewAI 的智能学习系统，具备多端适配、自定义 LLM 配置及自动化部署能力。
+基于 LangChain + LangGraph 的 AI 教学系统。支持多学期难度分级、结构化知识卡片、随堂测验。
 
-## 🎯 核心特性
-- **多端适配**: 完美支持手机、平板、PC 访问。
-- **自定义模型**: 界面化配置 OpenAI 兼容接口（如 DeepSeek, GPT-4）。
-- **全栈 Docker 化**: 支持双镜像分离部署，性能更优。
-- **自动化发布**: 集成 GitHub Actions 流水线，自动推送至 GHCR。
+## Architecture
 
----
-
-## 🚀 快速开始 (Linux Docker)
-
-仅需两步即可在 Linux 服务器上部署：
-
-```bash
-# 1. 下载部署配置文件
-mkdir aischool && cd aischool
-wget https://raw.githubusercontent.com/MoCuishlei/AISchool/main/docker-compose.yml
-wget https://raw.githubusercontent.com/MoCuishlei/AISchool/main/.env.example -O .env
-
-# 2. 启动服务
-# 请先编辑 .env 文件配置您的 API Key
-docker compose up -d
 ```
-访问地址：`http://服务器IP` (默认 80 端口)。
-
-### 1. 极简部署 (Standalone - 仅需一个镜像)
-如果您希望“秒级”启动，无需配置 Nginx 和多个容器，可以使用我们的一体化镜像：
-```bash
-docker run -d -p 8000:8000 \
-  -e LLM_API_KEY=您的密钥 \
-  --name aischool-app \
-  ghcr.io/mocuishlei/aischool-standalone:latest
+frontend/  (Vue 3 + Tailwind + Vite)
+     │  REST + SSE
+backend/   (FastAPI + LangChain + LangGraph)
+     │
+     ├── core/state.py      ← 11-state session state machine
+     ├── core/nodes.py      ← LangGraph node functions
+     ├── core/graph.py      ← Graph definitions (5 sub-graphs)
+     ├── core/knowledge.py  ← Knowledge graph + mastery model
+     ├── core/lesson.py     ← LessonDeck knowledge cards
+     └── core/llm.py        ← Unified ChatOpenAI (DeepSeek)
 ```
-访问地址：`http://服务器IP:8000`
 
----
+## Quick Start
 
-## 🏗️ 详细部署 (生产推荐)
-如果您想修改代码或在本地运行：
+### Prerequisites
+
+- Python 3.10+
+- Node.js 18+
+- DeepSeek API key (or any OpenAI-compatible API)
+
+### Backend
+
 ```bash
-git clone https://github.com/MoCuishlei/AISchool.git
+# 1. Clone & enter
+git clone https://github.com/civilization-os/AISchool.git
 cd AISchool
-docker compose up -d --build
+
+# 2. Setup config
+cp backend/.env.example backend/.env
+# Edit backend/.env — set your DEEPSEEK_API_KEY
+
+# 3. Install & run
+pip install -r backend/requirements.txt
+python -m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 2. 镜像说明
-我们现在采用 **双镜像分离架构** 以获得更好的生产性能：
-- **前端镜像**: `ghcr.io/mocuishlei/aischool-frontend:latest` (Nginx)
-- **后端镜像**: `ghcr.io/mocuishlei/aischool-backend:latest` (API)
-- **一体化镜像**: `ghcr.io/mocuishlei/aischool-standalone:latest` (全功能内置)
+### Frontend
 
----
-
-## ⚙️ 模型配置
-部署成功后，进入界面右侧菜单 **“模型配置”**：
-- 设置 **Base URL** (例如 `https://api.deepseek.com/v1`)
-- 设置 **API Key**
-- 点击 **“测试连接”** 验证模型是否响应。
-
----
-
-## 📄 开发者说明
-如果你想基于后端二次开发（如开发小程序）：
-- 请查阅界面中的 **“API 文档”**。
-- 后端 API 默认运行在 `8000` 端口。
-
-## 🔧 开发调试 (本地运行)
 ```bash
-# 后端
-pip install -r requirements.txt
-python -m uvicorn api.main:app --reload
-
-# 前端
 cd frontend
 npm install
 npm run dev
+```
+
+Open **http://localhost:5173**
+
+### Verify
+
+```bash
+curl http://localhost:8000/health
+# {"status":"ok","version":"2.0.0","service":"AI School"}
+```
+
+## Feature Overview
+
+### Course Creation
+```
+Launchpad → Type "微积分" → AI normalizes name + suggests levels
+  → Select difficulty: 🏁单学期 / 📗📘双学期 / 📗📘📕三学期
+  → Create → CourseStudio
+```
+
+### Learning Flow
+```
+CourseStudio (syllabus = course itself)
+  ├── Knowledge points grouped by chapters
+  ├── Click → Classroom (knowledge cards)
+  │     ├── 📖 Definition (always first)
+  │     ├── 📐 Geometric meaning
+  │     ├── ⚡ Physical meaning
+  │     ├── 🧮 Formula
+  │     ├── 💡 Examples
+  │     └── 🔬 Lab
+  │     └── Browse mode / Focus mode toggle
+  ├── 📝 Quiz → Pass → Mark done → Progress saved
+  └── 🔄 Regenerate syllabus (with confirmation modal)
+```
+
+### State Machine (11 states)
+
+```
+IDLE → ASSESSING → ASSESSED → SYLLABUS_READY → LEARNING
+  → QUIZ_ACTIVE → QUIZ_REVIEW → [passed] ITEM_DONE
+                               → [failed] LEARNING (retry)
+  → ITEM_DONE → [next] LEARNING → [done] complete
+```
+
+## Testing
+
+```bash
+cd backend
+python -m pytest tests/ -v
+# 82 passed
+```
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| POST | `/course/normalize` | Normalize course name, suggest levels |
+| POST | `/session/create` | Create learning session |
+| GET | `/session/{id}` | Get session detail with state_status |
+| POST | `/assessment/start/{id}` | Generate assessment questions |
+| POST | `/assessment/submit/{id}` | Submit & grade assessment |
+| POST | `/assessment/skip/{id}` | Skip assessment |
+| POST | `/syllabus/generate/{id}` | Generate syllabus (supports `?force=true`) |
+| POST | `/classroom/start/{id}` | Start lesson, returns LessonDeck |
+| POST | `/classroom/ask/{id}` | Ask follow-up question |
+| POST | `/classroom/start-quiz/{id}` | Generate quiz questions |
+| POST | `/classroom/submit-quiz/{id}` | Submit & grade quiz |
+| POST | `/syllabus/item/{id}/complete` | Mark item done, update progress |
+
+## Configuration
+
+Edit `backend/.env`:
+
+```env
+DEEPSEEK_API_KEY=sk-xxx
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DATABASE_URL=sqlite:///./database.db
+LLM_PROVIDER=deepseek
 ```

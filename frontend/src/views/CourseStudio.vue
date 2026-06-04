@@ -346,7 +346,7 @@ async function loadSession() {
       showItems.value = true
       const first = groupedSections.value[0]
       if (first) expandedSections.value.add(first.section_id)
-    } else if (res.status === 'assessed') {
+    } else if (res.status === 'assessed' || (res.status === 'syllabus_ready' && items.value.length === 0)) {
       await doGenerateSyllabus(false)
     } else {
       currentView.value = 'syllabus'

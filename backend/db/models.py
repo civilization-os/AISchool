@@ -93,6 +93,7 @@ class ClassroomConversation(Base):
     item_title = Column(String(200))
     messages = Column(JSON, default=list)                   # [{role, content, timestamp}, ...]
     lesson_content = Column(Text)                           # AI 初始讲解内容
+    lesson_plan = Column(JSON, default=dict)                # 结构化教案卡片
     attempt_count = Column(Integer, default=1)              # 上课次数（重学+1）
     started_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

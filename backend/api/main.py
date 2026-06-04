@@ -582,6 +582,7 @@ def classroom_start(session_id: int, req: StartLessonRequest, db: Session = Depe
             "item_id": item.item_id,
             "item_title": item.item_title,
             "lesson_content": convo.lesson_content,
+            "lesson_plan": convo.lesson_plan or {},
             "history": convo.messages,
             "attempt": convo.attempt_count,
             "resumed": True,
@@ -596,12 +597,16 @@ def classroom_start(session_id: int, req: StartLessonRequest, db: Session = Depe
     })
     lesson_content = plan_result.get("lesson_content", "")
     lesson_plan = plan_result.get("lesson_plan", {})
+    print(f"[DEBUG] lesson_plan cards: {len(lesson_plan.get('cards', []))}", flush=True)
 
     if convo is None:
         convo = crud.get_or_create_conversation(
             db, session_id, item.item_id, item.item_title, lesson_content)
+        convo.lesson_plan = lesson_plan
+        db.commit()
     else:
         convo.lesson_content = lesson_content
+        convo.lesson_plan = lesson_plan
         convo.messages = []
         db.commit()
 
