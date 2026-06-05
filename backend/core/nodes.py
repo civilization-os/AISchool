@@ -26,6 +26,39 @@ def _parse_json(raw: str, fallback=None):
         return fallback
 
 
+def _build_lesson_plan(raw: str, subject: str, item_title: str) -> dict:
+    """Build a lesson deck and fall back to a minimal card when the LLM JSON is malformed."""
+    from core.lesson import LessonDeck
+
+    data = _parse_json(raw, {}) or {}
+
+    try:
+        deck = LessonDeck.from_llm_json(data, subject=subject, topic=item_title)
+        lesson_dict = deck.to_dict()
+    except Exception:
+        lesson_dict = {}
+
+    if lesson_dict.get("cards"):
+        if not lesson_dict.get("objectives"):
+            lesson_dict["objectives"] = [f"掌握{item_title}的核心概念"]
+        return lesson_dict
+
+    return {
+        "topic": item_title,
+        "subject": subject,
+        "objectives": [f"掌握{item_title}的核心概念"],
+        "cards": [
+            {
+                "type": "definition",
+                "title": "核心内容",
+                "content": raw or f"本节课围绕「{item_title}」展开。",
+                "icon": "📉",
+                "label": "定义",
+            }
+        ],
+    }
+
+
 # ═══════════════════════════════════════════════════════════
 # 入学测评
 # ═══════════════════════════════════════════════════════════
@@ -218,7 +251,6 @@ def _review_syllabus(subject: str, syllabus: dict, items: list) -> tuple:
 def start_lesson(state: dict) -> dict:
     """开始上课 → LEARNING
     生成多维知识卡片（LessonDeck），每张 card 是一个独立维度"""
-    from core.lesson import LessonDeck
 
     subject = state.get("subject", "")
     item_title = state.get("current_item_title", "")
@@ -234,43 +266,62 @@ def start_lesson(state: dict) -> dict:
     )
     user = f"""为「{subject}」中的知识点「{item_title}」生成一组知识卡片{prompt_extra}。
 
-每张卡片从一个维度切入这个知识点，让学习者能多角度理解。
-根据知识点类型自动选择合适的卡片维度：
+卡片按推荐顺序排列，形成完整的学习叙事。每张卡片标注 `core: true`（必看）或 `core: false`（拓展）。
+必看卡片（2-3张）覆盖核心概念，拓展卡片（2-3张）提供深度补充。
 
-理科/工科类可选维度：definition, geometric, physical, formula, example, lab, application
-编程类可选维度：definition, syntax, code, example, pitfall, application
-文科/语言类可选维度：definition, example, application, analogy, history
+必看卡片应包含：
+- definition: 严格定义，必须是知识点的数学/学科定义
+- example: 代表性例题，含逐步解答
+- 一张你选择的必看维度（根据学科特点）
 
-要求：
-- 教学目标（objectives）：列出 2-3 个学习目标
-- 生成 4-6 张卡片，每张卡片是一个完整自洽的维度
-- 卡片内容用 Markdown，长度适中
+拓展卡片从以下选择（根据知识点关联性）：
+- geometric, physical, formula, lab, application, analogy, history, pitfall
+
+每张卡片还要带：
+- next_hint: 一句话预告下一张卡片的内容（最后一张写空字符串）
+- checkpoint: 一个小检测题（可选，只在必看卡片上出现）
 
 JSON 格式：
 {{
   "topic": "{item_title}",
   "objectives": ["理解...", "掌握..."],
   "cards": [
-    {{"type": "definition", "title": "定义", "content": "严格定义与说明..."}},
-    {{"type": "geometric", "title": "几何意义", "content": "几何直观解释..."}},
-    {{"type": "formula", "title": "公式", "content": "核心公式与推导..."}},
-    {{"type": "example", "title": "典型例题", "content": "例题与解答..."}},
-    {{"type": "lab", "title": "实验室", "content": "动手实验或代码..."}}
+    {{
+      "type": "definition",
+      "core": true,
+      "title": "定义",
+      "content": "严格定义与说明...",
+      "next_hint": "接下来用图像直观理解这个概念",
+      "checkpoint": {{"question": "快速检测题", "options": ["A","B","C","D"], "correct_index": 0, "explanation": "解析"}}
+    }},
+    {{
+      "type": "example",
+      "core": true,
+      "title": "典型例题",
+      "content": "例题与解答...",
+      "next_hint": "然后看看在实际场景中的应用",
+      "checkpoint": null
+    }},
+    {{
+      "type": "geometric",
+      "core": false,
+      "title": "几何意义",
+      "content": "几何直观解释...",
+      "next_hint": ""
+    }}
   ]
 }}"""
 
     resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-    data = _parse_json(resp.content, {})
 
     try:
-        deck = LessonDeck.from_llm_json(data, subject=subject, topic=item_title)
-        lesson_dict = deck.to_dict()
+        lesson_dict = _build_lesson_plan(resp.content, subject, item_title)
     except Exception as e:
         print(f"[start_lesson] 卡片生成失败: {e}，降级")
         lesson_dict = {
             "topic": item_title,
             "subject": subject,
-            "objectives": [f"掌握{item_title}"],
+            "objectives": [f"掌握{item_title}的核心概念"],
             "cards": [{"type": "definition", "title": "核心内容", "content": resp.content, "icon": "📖", "label": "定义"}],
         }
 

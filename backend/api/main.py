@@ -577,12 +577,24 @@ def classroom_start(session_id: int, req: StartLessonRequest, db: Session = Depe
         attempt = convo.attempt_count
     elif convo and not req.reteach:
         # 断线续学：返回已有内容
+        lesson_plan = convo.lesson_plan or {}
+        if not lesson_plan.get("cards"):
+            from core.nodes import _build_lesson_plan
+
+            lesson_plan = _build_lesson_plan(convo.lesson_content or "", session.subject, convo.item_title or item.item_title)
+            convo.lesson_plan = lesson_plan
+            db.commit()
+        elif not lesson_plan.get("objectives"):
+            lesson_plan["objectives"] = [f"掌握{convo.item_title or item.item_title}的核心概念"]
+            convo.lesson_plan = lesson_plan
+            db.commit()
+
         return {
             "conversation_id": convo.id,
             "item_id": item.item_id,
             "item_title": item.item_title,
             "lesson_content": convo.lesson_content,
-            "lesson_plan": convo.lesson_plan or {},
+            "lesson_plan": lesson_plan,
             "history": convo.messages,
             "attempt": convo.attempt_count,
             "resumed": True,

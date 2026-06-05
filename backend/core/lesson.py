@@ -52,6 +52,9 @@ class Card:
     title: str                          # 卡片标题
     content: str                        # Markdown 内容
     icon: str = "📄"                    # emoji
+    core: bool = True                   # 必看 or 拓展
+    next_hint: str = ""                 # 下一张的引导提示
+    checkpoint: Optional[dict] = None   # 快问快答
 
     def __post_init__(self):
         self.icon = CARD_ICONS.get(self.type, "📄")
@@ -67,6 +70,9 @@ class Card:
             "content": self.content,
             "icon": self.icon,
             "label": self.label,
+            "core": self.core,
+            "next_hint": self.next_hint,
+            "checkpoint": self.checkpoint,
         }
 
 
@@ -95,10 +101,14 @@ class LessonDeck:
         cards = []
         for cd in cards_data:
             card_type = cd.get("type", "definition")
+            cp = cd.get("checkpoint")
             cards.append(Card(
                 type=card_type,
                 title=cd.get("title", CARD_LABELS.get(card_type, "")),
                 content=cd.get("content", ""),
+                core=cd.get("core", True),
+                next_hint=cd.get("next_hint", ""),
+                checkpoint=cp if cp and cp.get("question") else None,
             ))
         # 确保 definition 卡排在最前
         def_sort_key = lambda c: (0 if c.type == "definition" else 1)
